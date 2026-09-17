@@ -1,3 +1,4 @@
+// Modified for standalone operation: external license lifecycle removed.
 package main
 
 import (
@@ -82,7 +83,7 @@ func init() {
 	}
 }
 
-func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.Config, conn *amqp.Connection, exPath string, runtimeCtx *core.RuntimeContext) *gin.Engine {
+func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.Config, conn *amqp.Connection, exPath string) *gin.Engine {
 	killChannel := make(map[string](chan bool))
 	clientPointer := make(map[string]*whatsmeow.Client)
 
@@ -216,10 +217,7 @@ func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.C
 		c.Next()
 	})
 
-	r.Use(core.GateMiddleware(runtimeCtx))
-
-	// License routes (always accessible, even without license)
-	core.LicenseRoutes(r, runtimeCtx)
+	core.RegisterManagerCompatibilityRoutes(r)
 
 	// Passkey ceremony routes — PUBLIC (called by the browser extension from the
 	// web.whatsapp.com origin, gated only by an opaque ephemeral token).
@@ -342,8 +340,6 @@ func main() {
 
 	logger.LogInfo("Starting Evolution GO version %s", version)
 
-	startTime := time.Now()
-
 	db, err := cfg.CreateUsersDB()
 	if err != nil {
 		log.Fatal(err)
@@ -368,14 +364,6 @@ func main() {
 	}
 
 	migrate(db)
-
-	// Initialize core DB + license runtime
-	core.SetDB(db)
-	if err := core.MigrateDB(); err != nil {
-		log.Fatal("Failed to migrate runtime_configs: ", err)
-	}
-	tier := "evolution-go"
-	runtimeCtx := core.InitializeRuntime(tier, version, cfg.GlobalApiKey)
 
 	var conn *amqp.Connection
 
@@ -405,13 +393,7 @@ func main() {
 		logger.LogInfo("RabbitMQ URL not configured, skipping RabbitMQ connection")
 	}
 
-	r := setupRouter(db, authDB, sqliteDB, cfg, conn, exPath, runtimeCtx)
-
-	// Graceful shutdown with heartbeat
-	heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
-	defer heartbeatCancel()
-
-	core.StartHeartbeat(heartbeatCtx, runtimeCtx, startTime)
+	r := setupRouter(db, authDB, sqliteDB, cfg, conn, exPath)
 
 	srv := &http.Server{
 		Addr:    ":" + os.Getenv("SERVER_PORT"),
@@ -430,11 +412,6 @@ func main() {
 
 	<-quit
 	logger.LogInfo("[SHUTDOWN] Signal received, shutting down...")
-
-	// Stop heartbeat loop
-	heartbeatCancel()
-
-	core.Shutdown(runtimeCtx)
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()

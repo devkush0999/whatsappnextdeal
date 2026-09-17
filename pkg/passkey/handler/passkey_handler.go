@@ -170,8 +170,7 @@ func (h *PasskeyHandler) Confirm(c *gin.Context) {
 }
 
 // RegisterRoutes wires the 3 PUBLIC ceremony endpoints directly on the engine,
-// with NO auth group (mirrors core.LicenseRoutes). Call from main.go right
-// after the license routes.
+// with NO auth group. The short-lived ceremony token authorizes each request.
 func RegisterRoutes(eng *gin.Engine, svc whatsmeow_service.WhatsmeowService) {
 	h := NewPasskeyHandler(svc)
 	grp := eng.Group("/passkey-ceremony")
