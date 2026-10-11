@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"github.com/evolution-foundation/evolution-go/pkg/otptransport"
 	"log"
 	"net/http"
 	"os"
@@ -230,6 +231,11 @@ func setupRouter(workerCtx context.Context, workerWG *sync.WaitGroup, otpConfig 
 		workerWG.Add(1)
 		go func() { defer workerWG.Done(); service.Run(workerCtx) }()
 	}
+	transportConfig, transportErr := otptransport.LoadConfig()
+	if transportErr != nil {
+		log.Fatal(transportErr)
+	}
+	otptransport.Register(r, transportConfig, whatsmeowService.SendOTP)
 	core.RegisterManagerCompatibilityRoutes(r)
 
 	// Passkey ceremony routes — PUBLIC (called by the browser extension from the

@@ -1,0 +1,65 @@
+name: nextdeal-whatsapp
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Generate DB_PASSWORD}
+      POSTGRES_DB: evolution
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U evolution -d evolution']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: &logs
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  gateway:
+    build: {context: ../.., dockerfile: Dockerfile}
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    ports: ['127.0.0.1:8091:8080']
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      TZ: Asia/Kolkata
+      POSTGRES_USERS_DB: postgres://evolution:${DB_PASSWORD}@postgres:5432/evolution?sslmode=disable
+      POSTGRES_AUTH_DB: postgres://evolution:${DB_PASSWORD}@postgres:5432/evolution_auth?sslmode=disable
+      GLOBAL_API_KEY: ${GLOBAL_API_KEY:?Generate GLOBAL_API_KEY}
+      DATABASE_SAVE_MESSAGES: 'false'
+      CONNECT_ON_STARTUP: 'true'
+      CLIENT_NAME: NextDeal
+      OS_NAME: NextDeal
+      WADEBUG: ERROR
+      LOGTYPE: console
+      WEBHOOK_URL: ''
+      WEBHOOK_FILES: 'false'
+      AMQP_URL: ''
+      AMQP_GLOBAL_ENABLED: 'false'
+      NATS_URL: ''
+      NATS_GLOBAL_ENABLED: 'false'
+      MINIO_ENABLED: 'false'
+      OTP_ENABLED: 'false'
+      NEXTDEAL_OTP_TRANSPORT_ENABLED: ${NEXTDEAL_OTP_TRANSPORT_ENABLED:-false}
+      NEXTDEAL_OTP_TRANSPORT_KEY: ${NEXTDEAL_OTP_TRANSPORT_KEY:?Generate transport key}
+      NEXTDEAL_OTP_INSTANCE_ID: ${NEXTDEAL_OTP_INSTANCE_ID:-}
+    volumes: [logs:/app/logs]
+    networks:
+      default: {}
+      delivery: {aliases: [nextdeal-whatsapp]}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/server/ok']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logs
+volumes:
+  database:
+  logs:
+networks:
+  delivery:
+    name: nextdeal-whatsapp-delivery

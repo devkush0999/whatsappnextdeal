@@ -1,9 +1,7 @@
 name: Build and Publish Docker Image
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   build_deploy:
@@ -26,7 +24,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: evoapicloud/evolution-go
+          images: devkush0999/whatsappnextdeal
           tags: |
             type=raw,value=${{ steps.version.outputs.version }}
             type=raw,value=latest,enable=${{ !contains(steps.version.outputs.version, '-beta') }}
