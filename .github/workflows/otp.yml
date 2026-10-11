@@ -1,0 +1,30 @@
+name: Go OTP tests
+on:
+  push:
+    paths: ['pkg/otp/**', 'pkg/otpclient/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
+  pull_request:
+    paths: ['pkg/otp/**', 'pkg/otpclient/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: integration-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race -count=1 ./pkg/otp ./pkg/otpclient
+        env:
+          OTP_TEST_DATABASE_URL: postgres://postgres:integration-only@localhost:5432/postgres?sslmode=disable
+      - run: go test ./...

@@ -1,0 +1,69 @@
+# From this directory: docker compose --env-file .env up -d --build
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set a random hex DB_PASSWORD}
+      POSTGRES_DB: evolution
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U evolution -d evolution']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:8080:8080'
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      POSTGRES_USERS_DB: postgres://evolution:${DB_PASSWORD}@postgres:5432/evolution?sslmode=disable
+      POSTGRES_AUTH_DB: postgres://evolution:${DB_PASSWORD}@postgres:5432/evolution_auth?sslmode=disable
+      GLOBAL_API_KEY: ${GLOBAL_API_KEY:?Set a random GLOBAL_API_KEY}
+      DATABASE_SAVE_MESSAGES: 'false'
+      CONNECT_ON_STARTUP: 'true'
+      CLIENT_NAME: Evolution
+      OS_NAME: Evolution
+      WADEBUG: ERROR
+      LOGTYPE: console
+      WEBHOOK_URL: ''
+      AMQP_URL: ''
+      NATS_URL: ''
+      MINIO_ENABLED: 'false'
+      OTP_ENABLED: 'true'
+      OTP_ADMIN_TOKEN: ${OTP_ADMIN_TOKEN:?Generate OTP secrets}
+      OTP_HMAC_KEY: ${OTP_HMAC_KEY:?Generate OTP secrets}
+      OTP_ENCRYPTION_KEY: ${OTP_ENCRYPTION_KEY:?Generate OTP secrets}
+      OTP_ALLOW_SANDBOX: ${OTP_ALLOW_SANDBOX:-false}
+      OTP_ALLOW_EVOLUTION: ${OTP_ALLOW_EVOLUTION:-false}
+      OTP_RETENTION_DAYS: ${OTP_RETENTION_DAYS:-30}
+      OTP_META_ACCESS_TOKEN: ${OTP_META_ACCESS_TOKEN:-}
+      OTP_META_PHONE_ID: ${OTP_META_PHONE_ID:-}
+      OTP_META_VERSION: ${OTP_META_VERSION:-}
+      OTP_META_APP_SECRET: ${OTP_META_APP_SECRET:-}
+      OTP_META_VERIFY_TOKEN: ${OTP_META_VERIFY_TOKEN:-}
+    volumes:
+      - logs:/app/logs
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/otp/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+volumes:
+  database:
+  logs:

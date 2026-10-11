@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -53,6 +54,7 @@ import (
 	auth_middleware "github.com/evolution-foundation/evolution-go/pkg/middleware"
 	newsletter_handler "github.com/evolution-foundation/evolution-go/pkg/newsletter/handler"
 	newsletter_service "github.com/evolution-foundation/evolution-go/pkg/newsletter/service"
+	"github.com/evolution-foundation/evolution-go/pkg/otp"
 	passkey_handler "github.com/evolution-foundation/evolution-go/pkg/passkey/handler"
 	poll_handler "github.com/evolution-foundation/evolution-go/pkg/poll/handler"
 	routes "github.com/evolution-foundation/evolution-go/pkg/routes"
@@ -83,7 +85,7 @@ func init() {
 	}
 }
 
-func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.Config, conn *amqp.Connection, exPath string) *gin.Engine {
+func setupRouter(workerCtx context.Context, workerWG *sync.WaitGroup, otpConfig otp.Config, db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.Config, conn *amqp.Connection, exPath string) *gin.Engine {
 	killChannel := make(map[string](chan bool))
 	clientPointer := make(map[string]*whatsmeow.Client)
 
@@ -201,7 +203,8 @@ func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.C
 	// NOVO: PollHandler usando PollService já inicializado no whatsmeowService (evita dupla inicialização)
 	pollHandler := poll_handler.NewPollHandler(whatsmeowService.GetPollService(), loggerWrapper)
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/otp/webhooks/meta"}}), gin.Recovery())
 
 	// CORS middleware — must be before everything else
 	r.Use(func(c *gin.Context) {
@@ -217,6 +220,16 @@ func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.C
 		c.Next()
 	})
 
+	if otpConfig.Enabled {
+		repo := otp.NewRepository(db)
+		if err := repo.Migrate(); err != nil {
+			log.Fatal("OTP migration failed: ", err)
+		}
+		service := otp.NewService(repo, otpConfig, otp.NewProvider(otpConfig, whatsmeowService.SendOTP))
+		service.Register(r)
+		workerWG.Add(1)
+		go func() { defer workerWG.Done(); service.Run(workerCtx) }()
+	}
 	core.RegisterManagerCompatibilityRoutes(r)
 
 	// Passkey ceremony routes — PUBLIC (called by the browser extension from the
@@ -393,11 +406,20 @@ func main() {
 		logger.LogInfo("RabbitMQ URL not configured, skipping RabbitMQ connection")
 	}
 
-	r := setupRouter(db, authDB, sqliteDB, cfg, conn, exPath)
+	otpConfig, err := otp.LoadConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	var workerWG sync.WaitGroup
+	r := setupRouter(workerCtx, &workerWG, otpConfig, db, authDB, sqliteDB, cfg, conn, exPath)
 
 	srv := &http.Server{
-		Addr:    ":" + os.Getenv("SERVER_PORT"),
-		Handler: r,
+		Addr:              os.Getenv("SERVER_HOST") + ":" + os.Getenv("SERVER_PORT"),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		Handler:           r,
 	}
 
 	quit := make(chan os.Signal, 1)
@@ -411,6 +433,7 @@ func main() {
 	}()
 
 	<-quit
+	stopWorker()
 	logger.LogInfo("[SHUTDOWN] Signal received, shutting down...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -420,5 +443,6 @@ func main() {
 		logger.LogError("[SHUTDOWN] Server forced to shutdown: %v", err)
 	}
 
+	workerWG.Wait()
 	logger.LogInfo("[SHUTDOWN] Server exited")
 }

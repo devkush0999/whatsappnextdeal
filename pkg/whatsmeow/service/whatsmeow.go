@@ -50,6 +50,7 @@ import (
 )
 
 type WhatsmeowService interface {
+	SendOTP(ctx context.Context, instanceID, number, text, messageID string) (string, error)
 	StartClient(clientData *ClientData)
 	ConnectOnStartup(clientName string)
 	StartInstance(instanceId string) error
@@ -76,6 +77,7 @@ type clientVersion struct {
 }
 
 type whatsmeowService struct {
+	otpClients         *sync.Map
 	sessionStore       *sharedSessionStore
 	activeClients      *sync.Map
 	instanceRepository instance_repository.InstanceRepository
@@ -405,6 +407,7 @@ func (w whatsmeowService) runClient(cd *ClientData) {
 	client := whatsmeow.NewClient(deviceStore, clientLog)
 
 	w.clientPointer[cd.Instance.Id] = client
+	w.otpClients.Store(cd.Instance.Id, client)
 
 	if cd.IsProxy {
 		var proxyConfig ProxyConfig
@@ -2803,6 +2806,7 @@ func NewWhatsmeowService(
 	pollSvc := poll_service.NewPollService(authDB, loggerWrapper)
 
 	return &whatsmeowService{
+		otpClients:         &sync.Map{},
 		sessionStore:       &sharedSessionStore{},
 		activeClients:      &sync.Map{},
 		instanceRepository: instanceRepository,
