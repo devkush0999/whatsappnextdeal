@@ -229,7 +229,7 @@
       "position:absolute;top:10px;right:14px;cursor:pointer;color:" + THEME.sub + ";font-size:20px;line-height:1;",
       "\u00d7"
     );
-    closeBtn.title = "Fechar";
+    closeBtn.title = "Close";
     closeBtn.addEventListener("click", function () {
       panel.remove();
       ui = null;
@@ -238,7 +238,7 @@
 
     var title = el("div", "font-size:15px;font-weight:800;margin-bottom:4px;display:flex;align-items:center;gap:8px;");
     title.appendChild(el("span", "font-size:16px;", "\uD83D\uDD11"));
-    title.appendChild(el("span", null, "Chave de acesso (passkey)"));
+    title.appendChild(el("span", null, "Passkey"));
 
     var desc = el("div", "font-size:13px;line-height:1.5;color:" + THEME.sub + ";", "");
 
@@ -251,7 +251,7 @@
 
     var status = el("div", "font-size:12px;margin-top:10px;color:" + THEME.sub + ";min-height:16px;");
 
-    var btn = el("button", BTN_STYLE, "Autenticar com chave de acesso");
+    var btn = el("button", BTN_STYLE, "Authenticate with passkey");
     btn.style.display = "none";
 
     panel.appendChild(closeBtn);
@@ -332,17 +332,17 @@
     busy = true;
     disableButton();
     showCode("");
-    setStatus("Aguardando a sua chave de acesso...");
+    setStatus("Waiting for your passkey...");
     try {
       var cred = await navigator.credentials.get({ publicKey: buildPublicKeyOptions(pk) });
-      if (!cred) throw new Error("Autenticacao cancelada.");
-      setStatus("Enviando assinatura...");
+      if (!cred) throw new Error("Authentication canceled.");
+      setStatus("Sending signature...");
       await sendResponse(cer, toWebAuthnResponse(cred));
       hideButton();
-      setStatus("Assinatura enviada. Concluindo pareamento...");
+      setStatus("Signature sent. Completing pairing...");
     } catch (e) {
       setStatus((e && e.message) || String(e), "error");
-      showButton("Tentar novamente", function () {
+      showButton("Try again", function () {
         authenticate(cer, pk);
       });
     } finally {
@@ -354,14 +354,14 @@
   async function confirmCode(cer) {
     busy = true;
     disableButton();
-    setStatus("Confirmando...");
+    setStatus("Confirming...");
     try {
       await sendConfirm(cer);
       hideButton();
-      setStatus("Confirmado. Concluindo pareamento...");
+      setStatus("Confirmed. Completing pairing...");
     } catch (e) {
       setStatus((e && e.message) || String(e), "error");
-      showButton("Tentar novamente", function () {
+      showButton("Try again", function () {
         confirmCode(cer);
       });
     } finally {
@@ -390,10 +390,10 @@
     switch (stage) {
       case "challenge":
         started = true;
-        setDesc("Clique para concluir o pareamento com a sua chave de acesso do WhatsApp.");
+        setDesc("Click to complete pairing with your WhatsApp passkey.");
         showCode("");
         if (!busy) {
-          showButton("Autenticar com chave de acesso", function () {
+          showButton("Authenticate with passkey", function () {
             authenticate(cer, st.publicKey);
           });
         }
@@ -404,21 +404,21 @@
         started = true;
         hideButton();
         showCode("");
-        setDesc("Assinatura enviada ao WhatsApp.");
-        setStatus("Aguardando codigo de confirmacao...");
+        setDesc("Signature sent to WhatsApp.");
+        setStatus("Waiting for the confirmation code...");
         schedulePoll(cer);
         break;
 
       case "confirmation":
         started = true;
-        setDesc("Verifique se o codigo abaixo e o mesmo exibido no seu celular.");
+        setDesc("Check that the code below matches the one on your phone.");
         showCode(st.code);
         if (st.skipHandoffUX) {
           hideButton();
-          setStatus("Confirmando automaticamente...");
+          setStatus("Confirming automatically...");
         } else {
           setStatus("");
-          showButton("Confirmar codigo", function () {
+          showButton("Confirm code", function () {
             confirmCode(cer);
           });
         }
@@ -429,16 +429,16 @@
         started = true;
         hideButton();
         showCode("");
-        setDesc("Chave de acesso confirmada.");
-        setStatus("Concluindo pareamento...");
+        setDesc("Passkey confirmed.");
+        setStatus("Completing pairing...");
         schedulePoll(cer);
         break;
 
       case "error":
         started = true;
         showCode("");
-        setDesc("Ocorreu um erro no pareamento por chave de acesso.");
-        setStatus(st.error || "Erro desconhecido.", "error");
+        setDesc("An error occurred during passkey pairing.");
+        setStatus(st.error || "Unknown error.", "error");
         // Permite reiniciar caso o backend reemita o desafio
         schedulePoll(cer);
         break;
@@ -449,13 +449,13 @@
           // Estado limpo apos ter iniciado = pareamento concluido (PairSuccess)
           hideButton();
           showCode("");
-          setDesc("Pareamento concluido com sucesso!");
-          setStatus("Pode voltar ao Evolution. Esta aba ja pode ser fechada.", "success");
+          setDesc("Pairing completed successfully!");
+          setStatus("You can return to Evolution and close this tab.", "success");
           clearCeremony();
           stopPolling();
         } else {
-          setDesc("Aguardando o desafio de chave de acesso do WhatsApp...");
-          setStatus("Escaneie o QR no Evolution para iniciar.");
+          setDesc("Waiting for the WhatsApp passkey challenge...");
+          setStatus("Scan the QR code in Evolution to start.");
           schedulePoll(cer);
         }
         break;
@@ -469,7 +469,7 @@
     var cer = getCeremony();
     if (!cer) return;
     ensurePanel();
-    setDesc("Preparando cerimonia de chave de acesso...");
+    setDesc("Preparing passkey authentication...");
     poll(cer);
   }
 
