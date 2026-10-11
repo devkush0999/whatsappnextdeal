@@ -1,9 +1,9 @@
 name: Go OTP tests
 on:
   push:
-    paths: ['pkg/otp/**', 'pkg/otpclient/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
+    paths: ['pkg/otp/**', 'pkg/otptransport/**', 'pkg/otpclient/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
   pull_request:
-    paths: ['pkg/otp/**', 'pkg/otpclient/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
+    paths: ['pkg/otp/**', 'pkg/otptransport/**', 'pkg/otpclient/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
 permissions:
   contents: read
 jobs:
@@ -24,7 +24,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test -race -count=1 ./pkg/otp ./pkg/otpclient
+      - run: go test -race -count=1 ./pkg/otp ./pkg/otpclient ./pkg/otptransport
         env:
           OTP_TEST_DATABASE_URL: postgres://postgres:integration-only@localhost:5432/postgres?sslmode=disable
       - run: go test ./...
