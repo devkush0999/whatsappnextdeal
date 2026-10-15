@@ -600,10 +600,8 @@ func (h *instanceHandler) GetLogs(c *gin.Context) {
 // @Failure 500 {object} gin.H "Internal server error"
 // @Router /instance/{instanceId}/advanced-settings [get]
 func (h *instanceHandler) GetAdvancedSettings(c *gin.Context) {
-	instanceId := c.Param("instanceId")
-
-	if instanceId == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "instanceId is required"})
+	instanceId, allowed := ownSettingsInstance(c)
+	if !allowed {
 		return
 	}
 
@@ -630,10 +628,8 @@ func (h *instanceHandler) GetAdvancedSettings(c *gin.Context) {
 // @Failure 500 {object} gin.H "Internal server error"
 // @Router /instance/{instanceId}/advanced-settings [put]
 func (h *instanceHandler) UpdateAdvancedSettings(c *gin.Context) {
-	instanceId := c.Param("instanceId")
-
-	if instanceId == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "instanceId is required"})
+	instanceId, allowed := ownSettingsInstance(c)
+	if !allowed {
 		return
 	}
 
@@ -653,6 +649,22 @@ func (h *instanceHandler) UpdateAdvancedSettings(c *gin.Context) {
 		"message":  "Advanced settings updated successfully",
 		"settings": settings,
 	})
+}
+
+// Sender credentials may manage only the authenticated sender. Cross-instance
+// administrator operations remain on the separately authorized admin routes.
+func ownSettingsInstance(c *gin.Context) (string, bool) {
+	value, exists := c.Get("instance")
+	instance, ok := value.(*instance_model.Instance)
+	if !exists || !ok || instance == nil || instance.Id == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "not authorized"})
+		return "", false
+	}
+	if c.Param("instanceId") != instance.Id {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "settings belong to another instance"})
+		return "", false
+	}
+	return instance.Id, true
 }
 
 func NewInstanceHandler(instanceService instance_service.InstanceService, config *config.Config) InstanceHandler {

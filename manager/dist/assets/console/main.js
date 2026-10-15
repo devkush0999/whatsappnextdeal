@@ -1,219 +1,293 @@
-import { instancesFrom, escapeHtml as h, qrImage, maskedNumber, } from "./model.js";
-const root = document.querySelector("#app");
-let key = "", rows = [], view = "overview", pending = false, loading = false, error = "", lastSync = "", generation = 0;
+import { instancesFrom, escapeHtml as h, qrImage, maskedNumber } from './model.js';
+import { operations } from './catalog.js';
+import { ApiClient } from './api.js';
+import { buildRequest, collectFields, redact, safeLink } from './forms.js';
+import { icon } from './icons.js';
+import { modules, moduleOps, empty, overview, instanceCard, toolOptions, operationForm, resultHtml, guideView } from './views.js';
+const root = document.querySelector('#app'), api = new ApiClient();
+const preview = document.querySelector('meta[name="console-preview"]')?.getAttribute('content') === 'true';
+let key = '', rows = [], selectedId = '', view = 'overview', opId = '', epoch = 0;
+let busy = false, refreshing = false, lastSync = '', error = '', search = '', mobileMenu = false;
 let activity = [];
-let qrTimer;
-const controllers = new Set();
-function log(message) {
-    activity.unshift({ time: new Date().toLocaleTimeString(), message });
-    activity = activity.slice(0, 50);
-}
-async function api(path, token, body) {
-    const c = new AbortController();
-    controllers.add(c);
-    const timer = setTimeout(() => c.abort(), 30000);
-    try {
-        const r = await fetch(path, {
-            method: body === undefined ? "GET" : "POST",
-            headers: { apikey: token, "Content-Type": "application/json" },
-            body: body === undefined ? undefined : JSON.stringify(body),
-            signal: c.signal,
-            cache: "no-store",
-            redirect: "error",
-        });
-        if (!r.ok)
-            throw new Error(r.status === 401 || r.status === 403
-                ? "Access denied. Check the API key."
-                : r.status === 429
-                    ? "Too many requests. Wait before retrying."
-                    : `Request failed (${r.status}). Check the service and try again.`);
-        return await r.json();
-    }
-    catch (e) {
-        if (e instanceof DOMException)
-            throw new Error("Request timed out or was cancelled. Check connection status before retrying.");
-        throw e;
-    }
-    finally {
-        clearTimeout(timer);
-        controllers.delete(c);
-    }
-}
+let result = null, resultTitle = '', resultTime = '', resultPage = 0;
+let values = {}, qrTimer;
+const selected = () => rows.find(r => r.id === selectedId);
+const secrets = () => [key, ...rows.map(r => r.token)];
+const operation = () => operations.find(o => o.id === opId);
+function log(title, state = 'success') { activity.unshift({ time: new Date().toLocaleTimeString(), title, state }); activity = activity.slice(0, 100); }
+function clearResult() { result = null; resultTitle = ''; resultTime = ''; resultPage = 0; }
+function showError(message) { error = message; const e = root.querySelector('#global-error'); if (e) {
+    e.textContent = message;
+    e.hidden = !message;
+} }
+function lock() { epoch++; api.cancelAll(); clearTimeout(qrTimer); document.querySelector('dialog')?.remove(); key = ''; rows = []; activity = []; selectedId = ''; values = {}; busy = false; refreshing = false; error = ''; clearResult(); login(); }
 function login() {
-    root.innerHTML = `<main class="login"><div class="brand"><span class="logo">N</span> NextDeal <span class="muted">/ WhatsApp</span></div><section class="login-card"><p class="eyebrow">OPERATIONS CONSOLE</p><h1>A clear view of<br>your connections.</h1><p class="muted">Manage your WhatsApp senders and keep NextDeal connected.</p><form id="login"><label for="key">Manager API key</label><input id="key" name="key" type="password" autocomplete="off" required placeholder="Enter your server manager key"><p class="hint">Your key stays in memory for this tab. Closing or refreshing the page locks the console.</p><button class="primary" type="submit">Open console <span>→</span></button><p id="login-error" role="alert"></p></form></section><p class="hint">NextDeal infrastructure · Authorized operators only</p></main>`;
-    root.querySelector("form").onsubmit = async (e) => {
+    root.innerHTML = `<main class="login"><div class="brand"><span class="logo">N<span>·</span></span>NextDeal <small>WHATSAPP</small></div><div class="login-layout"><section class="login-story"><p class="eyebrow">YOUR MESSAGING WORKSPACE</p><h1>One workspace.<br>More possibilities.</h1><p>Connect your senders. Work with contacts, messages and groups. Keep every operation in view.</p><div class="login-capabilities">${['Connections', 'Messaging', 'Contacts', 'Groups', 'Labels', 'Privacy'].map(x => `<span>${icon('check')}${x}</span>`).join('')}</div><p class="hint">Powered by your self-hosted Evolution Go gateway.</p></section><section class="login-card"><span class="badge">${preview ? 'SYNTHETIC PREVIEW' : 'AUTHORIZED OPERATORS'}</span><h2>Open your workspace</h2><p class="muted">Use the manager key from your server.</p><form id="login-form"><label for="manager-key">Manager API key</label><input id="manager-key" type="password" autocomplete="off" required placeholder="Enter manager key"><button class="primary wide" type="submit">Open console ${icon('arrow')}</button><p id="login-error" role="alert"></p></form><p class="hint">${icon('lock')} Credentials stay in this tab’s memory. Refreshing locks the console.</p>${preview ? '<p class="notice">Fictional data only. No WhatsApp action can be sent.</p>' : ''}</section></div></main>`;
+    root.querySelector('form').onsubmit = async (e) => {
         e.preventDefault();
-        const k = document.querySelector("#key").value.trim();
-        const b = root.querySelector("button");
+        const candidate = root.querySelector('#manager-key').value.trim(), g = ++epoch;
+        const b = root.querySelector('button');
         b.disabled = true;
         try {
-            const data = await api("/instance/all", k);
-            rows = instancesFrom(data);
-            key = k;
+            const data = instancesFrom(await api.request('/instance/all', candidate));
+            if (g !== epoch)
+                return;
+            rows = data;
+            key = candidate;
+            selectedId = rows[0]?.id || '';
+            view = 'overview';
             lastSync = new Date().toLocaleTimeString();
-            log("Console unlocked");
+            log('Workspace unlocked', 'read');
             render();
         }
         catch (e) {
-            document.querySelector("#login-error").textContent = e.message;
-            b.disabled = false;
-        }
-    };
-}
-function card(r) {
-    return `<article class="instance"><div class="instance-top"><span class="avatar">W</span><span class="badge ${r.connected ? "good" : "warn"}">${r.connected ? "Connected" : "Disconnected"}</span></div><h3>${h(r.name)}</h3><p class="muted">${h(maskedNumber(r.jid))}</p><p class="instance-id">${h(r.id)}</p><div class="card-actions"><button data-action="connect" data-id="${h(r.id)}" ${pending || r.connected ? "disabled" : ""}>Connect</button><button data-action="qr" data-id="${h(r.id)}" ${pending || r.connected ? "disabled" : ""}>Link with QR</button></div></article>`;
-}
-function render() {
-    if (!key)
-        return;
-    const connected = rows.filter((x) => x.connected).length;
-    root.innerHTML = `<div class="shell"><aside><a class="brand" href="/manager"><span class="logo">N</span> NextDeal</a><div class="workspace">WHATSAPP WORKSPACE</div><nav aria-label="Main navigation">${[
-        ["overview", "◫", "Overview"],
-        ["instances", "◉", "Instances"],
-        ["activity", "↗", "Activity"],
-        ["guide", "☷", "Setup guide"],
-    ]
-        .map(([id, icon, label]) => `<button class="nav ${view === id ? "active" : ""}" data-view="${id}" ${view === id ? 'aria-current="page"' : ""}><span>${icon}</span>${label}</button>`)
-        .join("")}</nav><div class="aside-bottom"><div class="small-dot"></div> Self-hosted on your VPS<p>NextDeal Operations</p><button id="signout">Lock console</button></div></aside><div class="main"><header><span>Workspace <span class="muted">/ ${h(view)}</span></span><span class="operator">● &nbsp; Operator</span></header><main class="content"><div class="title"><div><p class="eyebrow">WHATSAPP OPERATIONS</p><h1>${{ overview: "Workspace overview", instances: "Your connections", activity: "Session activity", guide: "Connection playbook" }[view]}</h1><p class="muted">${view === "overview" ? "Keep your senders connected. Know what needs attention." : view === "activity" ? "Actions in this browser session; this is not a server audit log." : view === "guide" ? "A practical guide to operating your WhatsApp service." : "Link and monitor WhatsApp sender accounts."}</p></div><button id="refresh" ${loading || pending ? "disabled" : ""}>${loading ? "Refreshing…" : "↻ Refresh"}</button></div>${error ? `<div class="alert" role="alert">${h(error)} Previous results may be stale.</div>` : ""}
- ${view === "overview" ? `<div class="stats"><section><span>Total instances</span><strong>${rows.length}</strong><small>Configured on this server</small></section><section><span>Connected</span><strong class="green">${connected}</strong><small>Live connection status</small></section><section><span>Needs attention</span><strong>${rows.length - connected}</strong><small>Disconnected senders</small></section></div><div class="notice"><span class="notice-icon">${rows.length === connected && rows.length ? "✓" : "!"}</span><div><b>${!rows.length ? "Start by adding a sender" : rows.length === connected ? "Your senders are connected" : "Some senders need attention"}</b><p>${!rows.length ? "Create an instance, then link WhatsApp with its QR code." : rows.length === connected ? "Connection status is healthy. Confirm delivery with an actual OTP when testing." : "Reconnect a saved session or link the sender with a fresh QR code."}</p></div></div>` : ""}
- ${view === "overview" || view === "instances" ? `<div class="section-title"><h2>Sender instances <span class="count">${rows.length}</span></h2><button class="primary" id="new-instance">+ New instance</button></div><div class="cards">${rows.length ? rows.map(card).join("") : '<div class="empty">No instances yet. Create your first sender to get started.</div>'}</div><p class="hint">Last synced: ${h(lastSync || "never")} · Refreshes every 20 seconds while this tab is visible.</p><div class="info-grid"><section><p class="eyebrow">DELIVERY</p><h3>Connection ≠ delivery</h3><p>Check the recipient inbox to confirm OTP delivery. Message delivery reporting is not configured.</p></section><section><p class="eyebrow">PRIVATE INTEGRATION</p><h3>Backend-owned OTPs</h3><p>NextDeal creates and verifies the code. This gateway delivers it. Keep transport keys on the backend.</p></section></div>` : ""}
- ${view === "activity" ? `<section class="panel">${activity.map((a) => `<div class="event"><time>${h(a.time)}</time><span>${h(a.message)}</span></div>`).join("") || "<p>No activity yet.</p>"}</section>` : ""}
- ${view === "guide" ? `<div class="guide-grid"><section class="panel"><h2>01 · Link a sender</h2><p>Create an instance or choose your existing one. Click Connect first. Then open Link with QR.</p><p>On the sender phone: WhatsApp → Settings → Linked devices → Link a device. Scan the QR displayed here.</p></section><section class="panel"><h2>02 · Recover a connection</h2><p>Click Connect once and refresh status. A saved session may reconnect without scanning. If the session is no longer valid, use a new QR.</p><p>A healthy HTTP server does not guarantee that WhatsApp is connected.</p></section><section class="panel"><h2>03 · Integrate safely</h2><p>Use the dedicated OTP transport from your trusted backend. Never place the manager key or transport key in a mobile app or website bundle.</p><p>New instances do not automatically become the NextDeal OTP sender. An operator must configure the intended instance on the server.</p></section><section class="panel"><h2>04 · Plan for outages</h2><p>Keep session backups and monitor disconnects. Daily backups and delivery monitoring are server operations; this screen does not guarantee them.</p><p>MSG91 fallback remains a separate backend setting. No provider change occurs when you link an instance here.</p></section></div>` : ""}
- </main><footer>NextDeal WhatsApp Console <span>Live API data · ${h(location.hostname)}</span></footer></div></div>`;
-    root.querySelectorAll("[data-view]").forEach((b) => (b.onclick = () => {
-        view = b.dataset.view;
-        render();
-    }));
-    document.querySelector("#signout").addEventListener("click", () => {
-        generation++;
-        controllers.forEach((c) => c.abort());
-        key = "";
-        rows = [];
-        activity = [];
-        error = "";
-        clearTimeout(qrTimer);
-        document.querySelector("dialog")?.remove();
-        login();
-    });
-    document
-        .querySelector("#refresh")
-        .addEventListener("click", () => void refresh());
-    document
-        .querySelector("#new-instance")
-        ?.addEventListener("click", newInstance);
-    root.querySelectorAll("[data-action]").forEach((b) => (b.onclick = () => {
-        const r = rows.find((r) => r.id === b.dataset.id);
-        if (r)
-            void act(b.dataset.action, r);
-    }));
-}
-async function refresh() {
-    if (!key || loading || pending)
-        return;
-    loading = true;
-    const g = generation;
-    try {
-        const data = await api("/instance/all", key);
-        if (g !== generation)
-            return;
-        rows = instancesFrom(data);
-        error = "";
-        lastSync = new Date().toLocaleTimeString();
-    }
-    catch (e) {
-        if (g === generation)
-            error = e.message;
-    }
-    finally {
-        loading = false;
-        if (g === generation)
-            render();
-    }
-}
-function dialog(title, html) {
-    clearTimeout(qrTimer);
-    document.querySelector("dialog")?.remove();
-    const d = document.createElement("dialog");
-    d.innerHTML = `<div class="dialog-title"><h2>${h(title)}</h2><button aria-label="Close dialog" id="close">×</button></div>${html}`;
-    document.body.append(d);
-    d.querySelector("#close").addEventListener("click", () => d.close());
-    d.addEventListener("close", () => {
-        clearTimeout(qrTimer);
-        d.remove();
-    });
-    d.showModal();
-    return d;
-}
-async function act(action, r) {
-    if (action === "qr") {
-        const d = dialog("Link " + r.name, `<p>WhatsApp → Settings → Linked devices → Link a device</p><div id="qr" role="status">Loading QR…</div><p class="hint">QR refreshes every 15 seconds. Close this dialog after the sender connects.</p>`);
-        const update = async () => {
-            try {
-                const data = (await api("/instance/qr", r.token));
-                if (!d.isConnected)
-                    return;
-                const img = qrImage(data.data?.qrcode);
-                d.querySelector("#qr").innerHTML = img
-                    ? `<img class="qr" alt="WhatsApp linking QR code" src="${img}">`
-                    : "No QR is ready. If already linked, close this dialog and refresh. Otherwise click Connect first.";
-            }
-            catch (e) {
-                if (d.isConnected)
-                    d.querySelector("#qr").textContent = e.message;
-            }
-            if (d.isConnected)
-                qrTimer = setTimeout(update, 15000);
-        };
-        void update();
-        return;
-    }
-    let failure = "";
-    pending = true;
-    render();
-    try {
-        await api("/instance/connect", r.token, {});
-        log(`Connection requested for ${r.name}`);
-        error = "";
-    }
-    catch (e) {
-        failure = e.message;
-        log(`Connection request failed for ${r.name}`);
-    }
-    finally {
-        pending = false;
-        await refresh();
-        if (failure) {
-            error = failure;
-            render();
-        }
-    }
-}
-function newInstance() {
-    const d = dialog("Create a sender", `<form id="create"><label for="name">Instance name</label><input id="name" maxlength="80" required placeholder="NextDeal OTP"><p class="hint">A secure instance key is generated automatically. Creating a sender does not change the active OTP configuration.</p><button class="primary">Create instance</button><p id="create-error" role="alert"></p></form>`);
-    d.querySelector("form").onsubmit = async (e) => {
-        e.preventDefault();
-        const name = d.querySelector("#name").value.trim();
-        if (!name)
-            return;
-        const b = d.querySelector("form button");
-        b.disabled = true;
-        const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
-        try {
-            await api("/instance/create", key, { name, token });
-            log(`Created ${name}`);
-            d.close();
-            await refresh();
-        }
-        catch (e) {
-            if (d.isConnected) {
-                d.querySelector("#create-error").textContent = e.message;
+            if (g === epoch) {
+                root.querySelector('#login-error').textContent = e.message;
                 b.disabled = false;
             }
         }
     };
 }
-setInterval(() => {
-    if (!document.hidden && !document.querySelector("dialog"))
-        void refresh();
-}, 20000);
+function senderPicker() { return `<div class="sender-strip"><div class="sender-heading">${icon('phone')}<div><label for="sender">Active sender</label><small>All sender tools use this account</small></div></div><select id="sender" aria-label="Active sender" ${busy ? 'disabled' : ''}>${rows.length ? rows.map(r => `<option value="${h(r.id)}" ${r.id === selectedId ? 'selected' : ''}>${h(r.name)} · ${h(maskedNumber(r.jid))}</option>`).join('') : '<option value="">No senders configured</option>'}</select><span id="sender-status" class="badge ${selected()?.connected ? 'good' : 'warn'}">${selected()?.connected ? 'Connected' : 'Disconnected'}</span></div>`; }
+function renderResult() { return result === null ? '' : resultHtml(result, resultTitle, resultTime, selected()?.name || 'Server', resultPage, secrets()); }
+function tools() { const op = operation(), list = moduleOps(view); return `<div class="tools-layout"><section class="tool-list"><label class="search-box">${icon('search')}<input id="tool-search" aria-label="Search tools" placeholder="Search ${view === 'library' ? 'all features' : 'tools'}…" value="${h(search)}"></label><div id="tool-options">${toolOptions(list, search, opId)}</div></section><section class="tool-detail" id="tool-detail">${op && list.some(o => o.id === op.id) ? operationForm(op, values, busy, !!selected(), renderResult()) : empty('Choose a tool', 'Start with an action on the left. Review its fields before running it.')}</section></div>`; }
+function content() {
+    if (view === 'overview')
+        return overview(rows);
+    if (view === 'guide')
+        return guideView();
+    if (view === 'activity')
+        return `<section class="panel"><div class="section-title"><h2>Session activity</h2><span class="badge">${activity.length} events</span></div><p class="hint">Cleared on lock or refresh. Message bodies, recipients and credentials are not recorded here.</p>${activity.map(e => `<div class="event"><span class="event-icon ${e.state}">${icon(e.state === 'failure' ? 'close' : 'check')}</span><div><b>${h(e.title)}</b><small>${h(e.time)}</small></div><span class="badge">${h(e.state)}</span></div>`).join('') || empty('Nothing recorded yet', 'Actions in this tab will appear here.')}</section>`;
+    if (view === 'instance')
+        return `<div class="section-title"><div><h2>Sender connections</h2><p class="muted">Manage each linked account independently.</p></div><button class="primary" data-op="POST /instance/create">${icon('plus')} New sender</button></div><div class="cards">${rows.length ? rows.map(instanceCard).join('') : empty('Create your first sender', 'Then link the intended WhatsApp phone.')}</div><div class="section-title"><h2>Connection tools</h2><span class="hint">Session changes require review.</span></div>${tools()}`;
+    const intro = view === 'library' ? `<div class="library-summary"><b>${operations.length} mounted operations</b><span> · ${operations.filter(o => !o.blocked).length} available to request · ${operations.filter(o => o.blocked).length} recovery holds</span><p class="hint">A mounted route is not proof of provider support. Required fields are checked before requests; WhatsApp may still reject an operation.</p></div>` : view === 'message' ? '<div class="notice"><p>These tools act on known message IDs. A searchable shared inbox and durable delivery analytics require additional server-side persistence.</p></div>' : view === 'integrations' ? `<div class="notice">${icon('code')}<p><b>Backend-owned OTPs.</b> NextDeal creates and verifies its four-digit codes. The gateway only delivers them. Creating a sender does not switch the active OTP sender.</p></div><div class="info-grid"><section><h3>Event integrations</h3><p>Configure an explicit webhook and event subscriptions below. Brokers also need server configuration.</p></section><section><h3>Optional OTP projects</h3><p>The independent six-digit OTP console at /otp, when enabled, is separate from the NextDeal login flow. Transport keys remain on the backend.</p></section></div>` : '';
+    return intro + tools();
+}
+function render() {
+    if (!key)
+        return;
+    const mod = modules.find(m => m[0] === view) || modules[0];
+    root.innerHTML = `<div class="shell ${mobileMenu ? 'menu-open' : ''}"><aside><a class="brand" href="#overview"><span class="logo">N<span>·</span></span>NextDeal</a><div class="workspace"><span class="small-dot"></span> WHATSAPP WORKSPACE</div><nav aria-label="Workspace navigation">${modules.map(m => `<button data-view="${m[0]}" class="nav ${view === m[0] ? 'active' : ''}" ${view === m[0] ? 'aria-current="page"' : ''}>${icon(m[1])}<span>${m[2]}</span>${m[0] === 'library' ? `<small>${operations.length}</small>` : ''}</button>`).join('')}</nav><div class="aside-bottom"><p>Evolution Go · Self-hosted</p><button id="lock">${icon('lock')} Lock workspace</button></div></aside><div class="main"><header><div><button class="icon-button mobile-toggle" id="menu" aria-label="Toggle navigation">${icon('grid')}</button><span class="breadcrumb">Workspace <span>/ ${h(mod[2])}</span></span></div><div class="header-actions"><span class="secure-label">${icon('shield')} Private workspace</span><button class="icon-button" id="header-lock" aria-label="Lock workspace">${icon('lock')}</button></div></header>${preview ? '<div class="preview-banner">PREVIEW · Fictional sender data. No action can reach WhatsApp.</div>' : ''}<main class="content"><div class="title"><div><p class="eyebrow">${view === 'overview' ? 'THE CONTROL ROOM' : 'WHATSAPP OPERATIONS'}</p><h1>${view === 'overview' ? 'Your workspace, connected.' : h(mod[2])}</h1><p class="muted">${h(mod[3])}</p></div><button id="refresh" ${busy || refreshing ? 'disabled' : ''}>${icon('refresh')} Refresh senders</button></div><div id="global-error" class="alert" role="alert" ${error ? '' : 'hidden'}>${h(error)}</div>${!['activity', 'guide'].includes(view) ? senderPicker() : ''}<div id="workspace-body">${content()}</div></main><footer><span>NextDeal WhatsApp Console <b>2.0</b></span><span id="sync-status">Synced ${h(lastSync || 'never')} · ${h(location.hostname)}</span></footer></div></div>`;
+    bind();
+}
+function navigate(next) { if (busy || !modules.some(m => m[0] === next))
+    return; view = next; search = ''; opId = ''; values = {}; clearResult(); mobileMenu = false; error = ''; render(); }
+function openOperation(id) {
+    if (busy)
+        return;
+    const op = operations.find(o => o.id === id);
+    if (!op)
+        return;
+    opId = id;
+    values = {};
+    clearResult();
+    error = '';
+    if (!moduleOps(view).some(o => o.id === id))
+        view = op.category;
+    if (op.path === '/instance/create')
+        values.token = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('');
+    render();
+    if (op.path === '/instance/qr')
+        void openQr();
+}
+function bindOperations() { root.querySelectorAll('[data-op]').forEach(b => b.onclick = () => openOperation(b.dataset.op)); }
+function bindPagination() { root.querySelectorAll('[data-page]').forEach(b => b.onclick = () => { resultPage = Number(b.dataset.page); root.querySelector('#result').innerHTML = renderResult(); bindPagination(); }); }
+function remember() { const op = operation(), form = root.querySelector('#operation-form'); if (op && form)
+    values = collectFields(form, op.fields); }
+function bind() {
+    root.querySelectorAll('[data-view]').forEach(b => b.onclick = () => navigate(b.dataset.view));
+    root.querySelector('.brand')?.addEventListener('click', e => { e.preventDefault(); navigate('overview'); });
+    root.querySelector('#lock')?.addEventListener('click', lock);
+    root.querySelector('#header-lock')?.addEventListener('click', lock);
+    root.querySelector('#menu')?.addEventListener('click', () => { mobileMenu = !mobileMenu; root.querySelector('.shell')?.classList.toggle('menu-open', mobileMenu); });
+    root.querySelector('#sender')?.addEventListener('change', e => { epoch++; api.cancelAll(); selectedId = e.target.value; busy = false; refreshing = false; values = {}; error = ''; clearResult(); render(); });
+    root.querySelector('#refresh')?.addEventListener('click', () => void refreshInstances(true));
+    bindOperations();
+    bindPagination();
+    root.querySelectorAll('[data-command]').forEach(b => b.onclick = () => { if (busy)
+        return; epoch++; api.cancelAll(); refreshing = false; selectedId = b.dataset.instance; clearResult(); values = {}; if (b.dataset.command === 'qr') {
+        render();
+        void openQr();
+    }
+    else {
+        view = 'instance';
+        openOperation(b.dataset.command === 'status' ? 'GET /instance/status' : 'GET /instance/info/:instanceId');
+    } });
+    root.querySelector('#tool-search')?.addEventListener('input', e => { search = e.target.value; root.querySelector('#tool-options').innerHTML = toolOptions(moduleOps(view), search, opId); bindOperations(); });
+    root.querySelector('#operation-form')?.addEventListener('submit', e => { e.preventDefault(); void submit(); });
+    root.querySelector('#load-settings')?.addEventListener('click', () => void loadSettings(false));
+    root.querySelector('#load-integrations')?.addEventListener('click', () => void loadSettings(true));
+}
+async function refreshInstances(forceRender = false) {
+    if (!key || busy || refreshing)
+        return;
+    refreshing = true;
+    const g = epoch;
+    try {
+        const data = instancesFrom(await api.request('/instance/all', key));
+        if (g !== epoch)
+            return;
+        rows = data;
+        lastSync = new Date().toLocaleTimeString();
+        if (!rows.some(r => r.id === selectedId)) {
+            selectedId = rows[0]?.id || '';
+            clearResult();
+            remember();
+            render();
+        }
+        for (const [id, value] of [['stat-total', rows.length], ['stat-connected', rows.filter(r => r.connected).length]]) {
+            const e = root.querySelector('#' + id);
+            if (e)
+                e.textContent = String(value);
+        }
+        const status = root.querySelector('#sender-status');
+        if (status) {
+            status.className = `badge ${selected()?.connected ? 'good' : 'warn'}`;
+            status.textContent = selected()?.connected ? 'Connected' : 'Disconnected';
+        }
+        const sync = root.querySelector('#sync-status');
+        if (sync)
+            sync.textContent = `Synced ${lastSync} · ${location.hostname}`;
+        showError('');
+        if (forceRender) {
+            remember();
+            render();
+        }
+    }
+    catch (e) {
+        if (g === epoch)
+            showError(e.message + ' Previous sender data may be stale.');
+    }
+    finally {
+        if (g === epoch)
+            refreshing = false;
+    }
+}
+function modal(title, html) { clearTimeout(qrTimer); document.querySelector('dialog')?.remove(); const d = document.createElement('dialog'); d.innerHTML = `<div class="dialog-title"><h2>${h(title)}</h2><button class="icon-button close-dialog" aria-label="Close dialog">${icon('close')}</button></div>${html}`; document.body.append(d); d.querySelector('.close-dialog').addEventListener('click', () => d.close()); d.addEventListener('close', () => { clearTimeout(qrTimer); d.remove(); }); d.showModal(); return d; }
+function review(op, body, sender) {
+    return new Promise(resolve => {
+        const destructive = op.effect === 'destructive', mustType = destructive ? sender?.name || 'CONFIRM' : '';
+        const d = modal(op.effect === 'send' ? 'Review your message' : 'Review this action', `<p><b>${h(op.title)}</b> ${sender ? 'using <b>' + h(sender.name) + '</b>' : 'on this server'}.</p>${op.effect === 'send' ? '<p>A real message will be sent when confirmed. Check status before repeating an interrupted request.</p>' : ''}${destructive ? '<p class="alert">This may remove data, revoke a session or interrupt the active OTP sender.</p>' : ''}<pre>${h(JSON.stringify(redact(body || {}, secrets()), null, 2))}</pre>${mustType ? `<label for="confirm-name">Type ${h(mustType)} to continue</label><input id="confirm-name" autocomplete="off">` : ''}<div class="review-actions"><button id="cancel">Cancel</button><button id="confirm" class="${destructive ? 'danger' : 'primary'}" ${mustType ? 'disabled' : ''}>${op.effect === 'send' ? 'Send message' : 'Confirm action'}</button></div>`);
+        let decided = false;
+        const finish = (v) => { if (decided)
+            return; decided = true; resolve(v); d.close(); };
+        d.querySelector('#cancel').addEventListener('click', () => finish(false));
+        d.querySelector('#confirm').addEventListener('click', () => finish(true));
+        d.querySelector('#confirm-name')?.addEventListener('input', e => { d.querySelector('#confirm').disabled = e.target.value !== mustType; });
+        d.addEventListener('close', () => { if (!decided) {
+            decided = true;
+            resolve(false);
+        } });
+    });
+}
+async function submit() {
+    const op = operation(), sender = selected(), form = root.querySelector('#operation-form');
+    if (!op || !form || busy || op.blocked)
+        return;
+    const errorNode = form.querySelector('#form-error'), g = epoch;
+    const connectionAction = op.path.startsWith('/instance/');
+    if (op.auth === 'instance' && !connectionAction && !sender?.connected) {
+        errorNode.textContent = 'Connect the selected sender first.';
+        return;
+    }
+    remember();
+    let request;
+    try {
+        request = buildRequest(op, values, sender?.id || '');
+    }
+    catch (e) {
+        errorNode.textContent = e.message;
+        return;
+    }
+    if (op.effect !== 'read' && !await review(op, request.body, sender))
+        return;
+    if (g !== epoch || !key)
+        return;
+    busy = true;
+    render();
+    try {
+        const data = await api.request(request.path, op.auth === 'admin' ? key : sender.token, op.method, request.body);
+        if (g !== epoch)
+            return;
+        result = data;
+        resultTitle = op.title;
+        resultTime = new Date().toLocaleTimeString();
+        resultPage = 0;
+        error = '';
+        log(op.title, op.effect === 'read' ? 'read' : 'success');
+    }
+    catch (e) {
+        if (g === epoch) {
+            const err = e;
+            error = err.message;
+            log(op.title + ' failed' + (err.uncertain ? ' · outcome uncertain' : ''), 'failure');
+        }
+    }
+    finally {
+        if (g === epoch) {
+            busy = false;
+            render();
+            if (connectionAction && op.effect !== 'read')
+                void refreshInstances(true);
+        }
+    }
+}
+async function loadSettings(integration) {
+    if (busy || !selected())
+        return;
+    const sender = selected(), g = epoch, id = opId;
+    remember();
+    busy = true;
+    render();
+    try {
+        const response = await api.request(integration ? `/instance/info/${encodeURIComponent(sender.id)}` : `/instance/${encodeURIComponent(sender.id)}/advanced-settings`, integration ? key : sender.token);
+        if (g !== epoch || opId !== id)
+            return;
+        const data = (response && typeof response === 'object' && 'data' in response ? response.data : response);
+        if (!data || typeof data !== 'object')
+            throw Error('Unexpected settings response.');
+        if (integration)
+            values = { ...values, webhookUrl: String(data.webhook ?? ''), subscribe: String(data.events ?? '').split(',').filter(Boolean).join('\n'), rabbitmqEnable: String(data.rabbitmqEnable ?? ''), websocketEnable: String(data.websocketEnable ?? ''), natsEnable: String(data.natsEnable ?? '') };
+        else
+            for (const field of operation().fields)
+                if (data[field.name] !== undefined)
+                    values[field.name] = String(data[field.name]);
+        log('Loaded saved ' + (integration ? 'connection settings' : 'sender behavior'), 'read');
+    }
+    catch (e) {
+        if (g === epoch)
+            error = e.message;
+    }
+    finally {
+        if (g === epoch) {
+            busy = false;
+            render();
+        }
+    }
+}
+async function openQr() {
+    const sender = selected();
+    if (!sender)
+        return;
+    const g = epoch;
+    const d = modal('Link ' + sender.name, '<p>WhatsApp → Settings → Linked devices → Link a device.</p><div id="qr" role="status">Loading linking information…</div><p class="hint">Refreshes every 15 seconds while open. This does not log out or reset a sender.</p>');
+    const update = async () => {
+        try {
+            const response = await api.request('/instance/qr', sender.token);
+            if (!d.isConnected || g !== epoch)
+                return;
+            const data = response.data || {}, image = qrImage(data.qrcode), link = safeLink(data.passkeyOpenUrl);
+            d.querySelector('#qr').innerHTML = image ? `<img class="qr" src="${image}" alt="WhatsApp sender linking QR code">` : data.passkeyStage ? `<p>Passkey step: ${h(data.passkeyStage)}</p>${data.passkeyCode ? `<p>Confirmation code: <b>${h(data.passkeyCode)}</b></p>` : ''}${link ? `<a href="${h(link)}" target="_blank" rel="noopener noreferrer">Continue passkey verification</a>` : '<p>Complete the linked-device step using the configured passkey helper.</p>'}` : '<p>No QR is ready. If connected, close this dialog. Otherwise Connect once and reopen QR.</p>';
+        }
+        catch (e) {
+            if (d.isConnected && g === epoch)
+                d.querySelector('#qr').textContent = e.message;
+        }
+        if (d.isConnected && g === epoch)
+            qrTimer = setTimeout(update, 15000);
+    };
+    void update();
+}
+setInterval(() => { if (!document.hidden && !document.querySelector('dialog'))
+    void refreshInstances(); }, 20000);
 login();
