@@ -265,7 +265,9 @@ function bind() {
             view = "instance";
             openOperation(b.dataset.command === "status"
                 ? "GET /instance/status"
-                : "GET /instance/info/:instanceId");
+                : b.dataset.command === "delete"
+                    ? "DELETE /instance/delete/:instanceId"
+                    : "GET /instance/info/:instanceId");
         }
     }));
     root

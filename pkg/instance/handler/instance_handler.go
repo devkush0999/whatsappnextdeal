@@ -2,6 +2,7 @@ package instance_handler
 
 import (
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -393,6 +394,10 @@ func (i *instanceHandler) Delete(ctx *gin.Context) {
 
 	if instanceId == "" {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "instanceId is required"})
+		return
+	}
+	if instanceId == os.Getenv("NEXTDEAL_OTP_INSTANCE_ID") {
+		ctx.JSON(http.StatusConflict, gin.H{"error": "This instance currently sends NextDeal login codes. Select another OTP sender before deleting it."})
 		return
 	}
 
