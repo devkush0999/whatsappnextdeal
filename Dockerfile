@@ -1,3 +1,10 @@
+FROM node:22-alpine AS manager-build
+WORKDIR /manager
+COPY manager/package.json manager/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY manager/ ./
+RUN npm run build
+
 FROM golang:1.25.0-alpine AS build
 
 RUN apk update && apk add --no-cache git build-base libjpeg-turbo-dev libwebp-dev
@@ -25,7 +32,7 @@ RUN apk update && apk add --no-cache tzdata ffmpeg libjpeg-turbo libwebp poppler
 WORKDIR /app
 
 COPY --from=build /build/server .
-COPY --from=build /build/manager/dist ./manager/dist
+COPY --from=manager-build /manager/dist ./manager/dist
 COPY --from=build /build/VERSION ./VERSION
 
 ENV TZ=America/Sao_Paulo
