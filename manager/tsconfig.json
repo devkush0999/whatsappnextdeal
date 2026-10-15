@@ -8,5 +8,13 @@
     "rootDir": "src",
     "skipLibCheck": true
   },
-  "include": ["src/main.ts", "src/model.ts", "src/catalog.ts", "src/forms.ts", "src/api.ts", "src/icons.ts", "src/views.ts"]
+  "include": [
+    "src/main.ts",
+    "src/model.ts",
+    "src/catalog.ts",
+    "src/forms.ts",
+    "src/api.ts",
+    "src/icons.ts",
+    "src/views.ts"
+  ]
 }

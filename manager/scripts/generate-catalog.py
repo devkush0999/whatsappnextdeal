@@ -99,7 +99,10 @@ def schema_fields(schema, path):
   if path=='/group/participant' and name=='action':f['options']=['add','remove','promote','demote']
   if path=='/group/settings' and name=='action':f['options']=['announcement','not_announcement','locked','unlocked']
   if path=='/instance/connect' and name in ['rabbitmqEnable','websocketEnable','natsEnable']:f['options']=['true','false']
-  if path=='/user/privacy':f['required']=True
+  if path=='/user/privacy':
+   f['required']=True
+   f['options']={'online':['all','match_last_seen'],'callAdd':['all','known'],'readReceipts':['all','none']}.get(name,['all','contacts','contact_blacklist','none'])
+  if path.endswith('/advanced-settings') and name!='msgRejectCall':f['required']=True
   if path=='/instance/create' and name=='token':f['advanced']=True
   fields.append(f)
  return sorted(fields,key=lambda f:(f['advanced'],0 if f['name']=='number' else 1))
