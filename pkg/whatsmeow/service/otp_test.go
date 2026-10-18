@@ -5,6 +5,7 @@ import (
 	"errors"
 	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
 	instance_repository "github.com/evolution-foundation/evolution-go/pkg/instance/repository"
+	"github.com/evolution-foundation/evolution-go/pkg/otptransport"
 	"go.mau.fi/whatsmeow"
 	"sync"
 	"testing"
@@ -27,12 +28,12 @@ func TestOTPRegistrySharedAcrossClientLifecycleCopies(t *testing.T) {
 	lifecycleCopy := *service
 	lifecycleCopy.otpClients.Store("instance", &whatsmeow.Client{})
 	_, err := service.SendOTP(context.Background(), "instance", "15555550123", "code", "id")
-	if err == nil || err.Error() != "OTP instance disconnected" {
+	if !errors.Is(err, otptransport.ErrSenderUnavailable) {
 		t.Fatalf("registered client not visible through original service: %v", err)
 	}
 	service.instanceRepository = otpRepositoryStub{deleted: true}
 	_, err = service.SendOTP(context.Background(), "instance", "15555550123", "code", "id")
-	if err == nil || err.Error() != "OTP instance unavailable" {
+	if !errors.Is(err, otptransport.ErrSenderUnavailable) {
 		t.Fatal("deleted instance remained sendable")
 	}
 }

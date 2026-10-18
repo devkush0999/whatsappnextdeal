@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/gin-gonic/gin"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -29,7 +30,7 @@ func TestDeliveryTransport(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			r := gin.New()
-			Register(r, Config{true, key, "instance"}, func(ctx context.Context, i, n, text, id string) (string, error) {
+			Register(r, Config{Enabled: true, Key: key, InstanceID: "instance"}, func(ctx context.Context, i, n, text, id string) (string, error) {
 				calls++
 				if _, ok := ctx.Deadline(); !ok {
 					t.Error("missing timeout")
@@ -59,7 +60,7 @@ func TestDuplicateAndCooldown(t *testing.T) {
 	r := gin.New()
 	key := strings.Repeat("k", 32)
 	calls := 0
-	Register(r, Config{true, key, "instance"}, func(context.Context, string, string, string, string) (string, error) { calls++; return "id", nil })
+	Register(r, Config{Enabled: true, Key: key, InstanceID: "instance"}, func(context.Context, string, string, string, string) (string, error) { calls++; return "id", nil })
 	for i, expected := range []int{202, 409, 429} {
 		id := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 		if i == 2 {
@@ -89,5 +90,49 @@ func TestDisabledAndConfig(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/internal/nextdeal/otp", nil))
 	if w.Code != 404 {
 		t.Fatal("disabled route exposed")
+	}
+}
+
+func TestSenderFailoverOnlyBeforeSend(t *testing.T) {
+	key := strings.Repeat("k", 32)
+	for _, tc := range []struct {
+		name       string
+		firstError error
+		wantStatus int
+		wantCalls  int
+	}{
+		{"disconnected sender", ErrSenderUnavailable, http.StatusAccepted, 2},
+		{"uncertain gateway error", errors.New("gateway timeout"), http.StatusServiceUnavailable, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := gin.New()
+			calls := []string{}
+			Register(r, Config{Enabled: true, Key: key, InstanceIDs: []string{"primary", "standby"}},
+				func(_ context.Context, instanceID, _, _, _ string) (string, error) {
+					calls = append(calls, instanceID)
+					if instanceID == "primary" {
+						return "", tc.firstError
+					}
+					return "message-id", nil
+				})
+			req := httptest.NewRequest(http.MethodPost, "/internal/nextdeal/otp", strings.NewReader(`{"phone":"919000000001","code":"1234","requestId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+			req.Header.Set("X-NextDeal-OTP-Key", key)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != tc.wantStatus || len(calls) != tc.wantCalls {
+				t.Fatalf("status=%d senders=%v", w.Code, calls)
+			}
+		})
+	}
+}
+
+func TestLoadConfigSenderPool(t *testing.T) {
+	t.Setenv("NEXTDEAL_OTP_TRANSPORT_ENABLED", "true")
+	t.Setenv("NEXTDEAL_OTP_TRANSPORT_KEY", strings.Repeat("k", 32))
+	t.Setenv("NEXTDEAL_OTP_INSTANCE_ID", "legacy")
+	t.Setenv("NEXTDEAL_OTP_INSTANCE_IDS", "primary, standby")
+	cfg, err := LoadConfig()
+	if err != nil || len(cfg.InstanceIDs) != 2 || cfg.InstanceIDs[0] != "primary" || cfg.InstanceIDs[1] != "standby" {
+		t.Fatalf("sender pool not loaded: %+v, %v", cfg.InstanceIDs, err)
 	}
 }

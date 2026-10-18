@@ -47,6 +47,7 @@ services:
       NEXTDEAL_OTP_TRANSPORT_ENABLED: ${NEXTDEAL_OTP_TRANSPORT_ENABLED:-false}
       NEXTDEAL_OTP_TRANSPORT_KEY: ${NEXTDEAL_OTP_TRANSPORT_KEY:?Generate transport key}
       NEXTDEAL_OTP_INSTANCE_ID: ${NEXTDEAL_OTP_INSTANCE_ID:-}
+      NEXTDEAL_OTP_INSTANCE_IDS: ${NEXTDEAL_OTP_INSTANCE_IDS:-}
     volumes: [logs:/app/logs]
     networks:
       default: {}

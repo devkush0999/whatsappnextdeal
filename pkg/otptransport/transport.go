@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,11 +23,21 @@ type SendFunc func(context.Context, string, string, string, string) (string, err
 type Config struct {
 	Enabled         bool
 	Key, InstanceID string
+	InstanceIDs     []string
 }
 
 func LoadConfig() (Config, error) {
 	c := Config{Enabled: os.Getenv("NEXTDEAL_OTP_TRANSPORT_ENABLED") == "true", Key: os.Getenv("NEXTDEAL_OTP_TRANSPORT_KEY"), InstanceID: os.Getenv("NEXTDEAL_OTP_INSTANCE_ID")}
-	if c.Enabled && (len(c.Key) < 32 || c.InstanceID == "") {
+	for _, id := range strings.Split(os.Getenv("NEXTDEAL_OTP_INSTANCE_IDS"), ",") {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			c.InstanceIDs = append(c.InstanceIDs, id)
+		}
+	}
+	if len(c.InstanceIDs) == 0 && c.InstanceID != "" {
+		c.InstanceIDs = []string{c.InstanceID}
+	}
+	if c.Enabled && (len(c.Key) < 32 || len(c.InstanceIDs) == 0) {
 		return c, errors.New("configure NextDeal OTP transport key (32+ characters) and instance ID")
 	}
 	return c, nil
@@ -118,10 +129,24 @@ func (h *Handler) deliver(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
 	defer cancel()
 	message := fmt.Sprintf("%s is your NextDeal login verification code. It expires in 10 minutes. Do not share this code. If you did not request it, ignore this message.", b.Code)
-	id, err := h.send(ctx, h.cfg.InstanceID, b.Phone, message, b.RequestID)
-	if err != nil || id == "" {
-		c.AbortWithStatusJSON(503, gin.H{"error": "DELIVERY_UNCONFIRMED"})
-		return
+	instances := h.cfg.InstanceIDs
+	if len(instances) == 0 && h.cfg.InstanceID != "" {
+		instances = []string{h.cfg.InstanceID}
 	}
-	c.JSON(http.StatusAccepted, gin.H{"status": "ACCEPTED", "requestId": b.RequestID})
+	for _, instanceID := range instances {
+		id, err := h.send(ctx, instanceID, b.Phone, message, b.RequestID)
+		if err == nil && id != "" {
+			c.JSON(http.StatusAccepted, gin.H{"status": "ACCEPTED", "requestId": b.RequestID})
+			return
+		}
+		// Only pre-send connection failures are safe to retry on another sender.
+		// A gateway error or timeout can mean the message was already accepted.
+		if err == nil || !errors.Is(err, ErrSenderUnavailable) || ctx.Err() != nil {
+			break
+		}
+	}
+	c.AbortWithStatusJSON(503, gin.H{"error": "DELIVERY_UNCONFIRMED"})
 }
+
+// ErrSenderUnavailable means no WhatsApp send was attempted for this sender.
+var ErrSenderUnavailable = errors.New("OTP sender unavailable before send")
