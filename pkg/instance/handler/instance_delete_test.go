@@ -22,11 +22,14 @@ func (s *deleteService) Delete(id string) error {
 func TestDeleteProtectsActiveOTPSender(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("NEXTDEAL_OTP_INSTANCE_ID", "active-sender")
+	t.Setenv("NEXTDEAL_OTP_INSTANCE_IDS", "primary-sender, standby-sender")
 	for _, tc := range []struct {
 		name, id string
 		want     int
 	}{
 		{"active sender", "active-sender", http.StatusConflict},
+		{"pool primary", "primary-sender", http.StatusConflict},
+		{"pool standby", "standby-sender", http.StatusConflict},
 		{"other sender", "old-sender", http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
