@@ -1,9 +1,9 @@
 name: Go OTP tests
 on:
   push:
-    paths: ['pkg/otp/**', 'pkg/otptransport/**', 'pkg/otpclient/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
+    paths: ['pkg/otp/**', 'pkg/otptransport/**', 'pkg/otpclient/**', 'pkg/instance/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
   pull_request:
-    paths: ['pkg/otp/**', 'pkg/otptransport/**', 'pkg/otpclient/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
+    paths: ['pkg/otp/**', 'pkg/otptransport/**', 'pkg/otpclient/**', 'pkg/instance/**', 'cmd/**', 'pkg/whatsmeow/service/**', 'go.mod', 'go.sum', '.github/workflows/otp.yml']
 permissions:
   contents: read
 jobs:

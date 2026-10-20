@@ -90,8 +90,10 @@ type StatusStruct struct {
 }
 
 type QrcodeStruct struct {
-	Qrcode string `json:"qrcode"`
-	Code   string `json:"code"`
+	Qrcode   string `json:"qrcode"`
+	Code     string `json:"code"`
+	LoggedIn bool   `json:"loggedIn,omitempty"`
+	Pending  bool   `json:"pending,omitempty"`
 	// Passkey ceremony fields. Populated when the account requires a WebAuthn
 	// passkey to finish linking (no QR to scan at that point). The manager uses
 	// PasskeyStage to switch its UI and PasskeyOpenUrl for the
@@ -415,13 +417,13 @@ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, erro
 	logger := i.loggerWrapper.GetLogger(instance.Id)
 	client := i.clientPointer[instance.Id]
 
-	// Se não há cliente ou o cliente está logado, precisamos iniciar um novo cliente
-	if client == nil || client.IsLoggedIn() {
-		if client != nil && client.IsLoggedIn() {
-			logger.LogInfo("[%s] Client is logged in, starting new instance for QR code", instance.Id)
-		} else {
-			logger.LogInfo("[%s] No client found, starting new instance for QR code", instance.Id)
-		}
+	// An authenticated sender has no linking QR. Never start a second client for it.
+	if client != nil && client.IsLoggedIn() {
+		return &QrcodeStruct{LoggedIn: true}, nil
+	}
+
+	if client == nil {
+		logger.LogInfo("[%s] No client found, starting new instance for QR code", instance.Id)
 
 		// Iniciar nova instância para gerar QR code
 		err := i.whatsmeowService.StartInstance(instance.Id)
@@ -437,7 +439,7 @@ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, erro
 		// Verificar novamente se há cliente
 		client = i.clientPointer[instance.Id]
 		if client != nil && client.IsLoggedIn() {
-			return nil, fmt.Errorf("session already logged in")
+			return &QrcodeStruct{LoggedIn: true}, nil
 		}
 	} else if !client.IsConnected() {
 		// Se o cliente existe mas não está conectado, pode estar aguardando QR code
@@ -448,6 +450,9 @@ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, erro
 	instance, err := i.instanceRepository.GetInstanceByID(instance.Id)
 	if err != nil {
 		return nil, err
+	}
+	if client := i.clientPointer[instance.Id]; client != nil && client.IsLoggedIn() {
+		return &QrcodeStruct{LoggedIn: true}, nil
 	}
 
 	// If a passkey ceremony is in progress, there is no QR to scan — return the
@@ -478,7 +483,7 @@ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, erro
 
 		code = instance.Qrcode
 		if code == "" {
-			return nil, fmt.Errorf("no QR code available. Please wait a moment and try again")
+			return &QrcodeStruct{Pending: true}, nil
 		}
 	}
 
