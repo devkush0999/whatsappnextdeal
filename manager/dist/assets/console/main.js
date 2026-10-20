@@ -543,11 +543,18 @@ async function openQr() {
             if (!d.isConnected || g !== epoch)
                 return;
             const data = response.data || {}, image = qrImage(data.qrcode), link = safeLink(data.passkeyOpenUrl);
-            d.querySelector("#qr").innerHTML = image
-                ? `<img class="qr" src="${image}" alt="WhatsApp sender linking QR code">`
-                : data.passkeyStage
-                    ? `<p>Passkey step: ${h(data.passkeyStage)}</p>${data.passkeyCode ? `<p>Confirmation code: <b>${h(data.passkeyCode)}</b></p>` : ""}${link ? `<a href="${h(link)}" target="_blank" rel="noopener noreferrer">Continue passkey verification</a>` : "<p>Complete the linked-device step using the configured passkey helper.</p>"}`
-                    : "<p>No QR is ready. If connected, close this dialog. Otherwise Connect once and reopen QR.</p>";
+            let content;
+            if (data.loggedIn)
+                content = "<p>This sender is already linked to WhatsApp. No QR code is needed.</p>";
+            else if (image)
+                content = `<img class="qr" src="${image}" alt="WhatsApp sender linking QR code">`;
+            else if (data.passkeyStage)
+                content = `<p>Passkey step: ${h(data.passkeyStage)}</p>${data.passkeyCode ? `<p>Confirmation code: <b>${h(data.passkeyCode)}</b></p>` : ""}${link ? `<a href="${h(link)}" target="_blank" rel="noopener noreferrer">Continue passkey verification</a>` : "<p>Complete the linked-device step using the configured passkey helper.</p>"}`;
+            else if (data.pending)
+                content = "<p>Waiting for a linking QR code. If it does not appear, close this dialog and use Connect once.</p>";
+            else
+                content = "<p>No QR is ready. Check sender status, then use Connect once if it is not linked.</p>";
+            d.querySelector("#qr").innerHTML = content;
         }
         catch (e) {
             if (d.isConnected && g === epoch)
