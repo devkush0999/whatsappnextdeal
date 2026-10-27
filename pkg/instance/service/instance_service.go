@@ -302,11 +302,13 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
 }
 
 func (i instances) Reconnect(instance *instance_model.Instance) error {
-	_, err := i.ensureClientConnected(instance.Id)
-	if err != nil {
-		return err
+	if instance == nil || strings.TrimSpace(instance.Id) == "" {
+		return errors.New("instance is required for reconnect")
 	}
 
+	// Reconnection is the recovery path for a disconnected or absent client.
+	// The handler's authenticated instance determines the target; requiring an
+	// active connection here prevents the recovery operation from ever running.
 	return i.whatsmeowService.ReconnectClient(instance.Id)
 }
 

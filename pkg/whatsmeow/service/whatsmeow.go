@@ -80,6 +80,7 @@ type whatsmeowService struct {
 	otpClients         *sync.Map
 	sessionStore       *sharedSessionStore
 	activeClients      *sync.Map
+	reconnecting       *sync.Map
 	instanceRepository instance_repository.InstanceRepository
 	authDB             *sql.DB
 	messageRepository  message_repository.MessageRepository
@@ -152,6 +153,7 @@ type ClientData struct {
 	Subscriptions []string
 	Phone         string
 	IsProxy       bool
+	stop          <-chan struct{}
 }
 
 type Values struct {
@@ -177,6 +179,12 @@ type ProxyConfig struct {
 func (w whatsmeowService) ReconnectClient(instanceId string) error {
 	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Starting reconnection process - simulating restart", instanceId)
 
+	// Coalesce simultaneous automatic/manual recovery attempts for this sender.
+	if _, busy := w.reconnecting.LoadOrStore(instanceId, struct{}{}); busy {
+		return nil
+	}
+	defer w.reconnecting.Delete(instanceId)
+
 	// Passo 1: Limpar conexão existente se houver
 	if client, exists := w.clientPointer[instanceId]; exists {
 		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Disconnecting existing client", instanceId)
@@ -196,28 +204,23 @@ func (w whatsmeowService) ReconnectClient(instanceId string) error {
 		}
 	}
 
-	// Passo 2: Limpar todos os recursos da instância
-	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Cleaning up resources", instanceId)
-
-	// Enviar sinal de kill se o canal existir
-	if killChan, exists := w.killChannel[instanceId]; exists {
-		select {
-		case killChan <- true:
-			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Kill signal sent", instanceId)
-		default:
-			// Canal pode estar bloqueado, continua
-		}
+	// A best-effort send on the legacy unbuffered kill channel can be lost.
+	// Do not replace shared pointers/channels until the old worker has exited:
+	// otherwise its active-client guard drops the new worker permanently.
+	if err := w.stopClientWorker(instanceId, 30*time.Second); err != nil {
+		return err
 	}
 
 	// Remover das estruturas
 	delete(w.clientPointer, instanceId)
 	delete(w.myClientPointer, instanceId)
 	delete(w.killChannel, instanceId)
+	w.otpClients.Delete(instanceId)
 
 	// Limpar cache de userInfo para esta instância
 	if instance, err := w.instanceRepository.GetInstanceByID(instanceId); err == nil {
 		w.userInfoCache.Delete(instance.Token)
-		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] UserInfo cache cleared for token: %s", instanceId, instance.Token)
+		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] UserInfo cache cleared", instanceId)
 	}
 
 	// Passo 3: Atualizar status no banco
@@ -305,11 +308,10 @@ func (w whatsmeowService) ForceUpdateJid(instanceId string, number string) error
 }
 
 func (w whatsmeowService) StartClient(cd *ClientData) {
-	if _, running := w.activeClients.LoadOrStore(cd.Instance.Id, struct{}{}); running {
-		return
-	}
-	defer w.activeClients.Delete(cd.Instance.Id)
-	w.runClient(cd)
+	w.runClientWorker(cd.Instance.Id, func(stop <-chan struct{}) {
+		cd.stop = stop
+		w.runClient(cd)
+	})
 }
 
 func (w whatsmeowService) runClient(cd *ClientData) {
@@ -497,6 +499,12 @@ func (w whatsmeowService) runClient(cd *ClientData) {
 	// Armazena o MyClient no map para permitir atualizações posteriores
 	w.myClientPointer[cd.Instance.Id] = mycli
 
+	select {
+	case <-cd.stop:
+		return
+	default:
+	}
+
 	if client.Store.ID != nil {
 		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Already logged in with JID: %s", cd.Instance.Id, client.Store.ID.String())
 		err = client.Connect()
@@ -567,9 +575,13 @@ func (w whatsmeowService) runClient(cd *ClientData) {
 
 	// Removed auto-reconnect logic to prevent infinite loops
 
+	kill := w.killChannel[cd.Instance.Id]
 	for {
 		select {
-		case <-w.killChannel[cd.Instance.Id]:
+		case <-cd.stop:
+			client.Disconnect()
+			return
+		case <-kill:
 			w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Received kill signal for user '%s'", cd.Instance.Id)
 			client.Disconnect()
 
@@ -2321,6 +2333,18 @@ func (w whatsmeowService) StartInstance(instanceId string) error {
 		return err
 	}
 
+	// Reserve admission before replacing any channels or spawning a goroutine.
+	worker, claimed := w.claimClientWorker(instanceId)
+	if !claimed {
+		return nil
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			w.finishClientWorker(instanceId, worker)
+		}
+	}()
+
 	if instance.Proxy == "" && w.config.ProxyHost != "" && w.config.ProxyPort != "" && w.config.ProxyUsername != "" && w.config.ProxyPassword != "" {
 		proxyConfig := ProxyConfig{
 			Protocol: utils.NormalizeProxyProtocol(w.config.ProxyProtocol, w.config.ProxyPort),
@@ -2399,7 +2423,12 @@ func (w whatsmeowService) StartInstance(instanceId string) error {
 		}
 	}
 
-	go w.StartClient(clientData)
+	clientData.stop = worker.stop
+	launched = true
+	go func() {
+		defer w.finishClientWorker(instanceId, worker)
+		w.runClient(clientData)
+	}()
 
 	return nil
 }
@@ -2809,6 +2838,7 @@ func NewWhatsmeowService(
 		otpClients:         &sync.Map{},
 		sessionStore:       &sharedSessionStore{},
 		activeClients:      &sync.Map{},
+		reconnecting:       &sync.Map{},
 		instanceRepository: instanceRepository,
 		authDB:             authDB,
 		messageRepository:  messageRepository,
